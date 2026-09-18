@@ -1,4 +1,5 @@
-import os
+﻿import os
+import time
 import urllib.request
 
 import cv2
@@ -37,6 +38,8 @@ CONNECTIONS = [
     (0, 17),
 ]
 
+prev_time = 0
+
 
 def dist(a, b):
     return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
@@ -45,18 +48,13 @@ def dist(a, b):
 def count_fingers(lm):
     wrist = lm[0]
     count = 0
-
-    # thumb - check how far the tip is from the pinky side of the palm
     tip_to_pinky = dist(lm[4], lm[17])
     mcp_to_pinky = dist(lm[2], lm[17])
     if tip_to_pinky > mcp_to_pinky * 1.1:
         count += 1
-
-    # other 4 fingers - tip further from wrist than the pip joint = finger up
     for tip_id, pip_id in zip(TIP_IDS[1:], PIP_IDS[1:]):
         if dist(lm[tip_id], wrist) > dist(lm[pip_id], wrist) * 1.1:
             count += 1
-
     return count
 
 
@@ -88,6 +86,11 @@ while True:
 
     frame = cv2.flip(frame, 1)
 
+    # FPS calculate karo
+    curr_time = time.time()
+    fps = 1 / (curr_time - prev_time) if prev_time else 0
+    prev_time = curr_time
+
     # object detection + tracking
     results = model.track(frame, persist=True, verbose=False)
     annotated = results[0].plot()
@@ -103,12 +106,14 @@ while True:
         for lm, handed in zip(hand_result.hand_landmarks, hand_result.handedness):
             label = handed[0].category_name
             fingers = count_fingers(lm)
-
             draw_hand(annotated, lm)
-
             x, y = int(lm[0].x * w), int(lm[0].y * h)
             cv2.putText(annotated, f"{label}: {fingers} fingers", (x - 50, y + 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    # FPS display
+    cv2.putText(annotated, f"FPS: {int(fps)}", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
     cv2.imshow("Object Detection and Tracking - CodeAlpha", annotated)
 
