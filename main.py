@@ -1,6 +1,7 @@
 ﻿import os
 import time
 import urllib.request
+from datetime import datetime
 
 import cv2
 import mediapipe as mp
@@ -8,7 +9,7 @@ from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
 from ultralytics import YOLO
 
-model = YOLO("yolov8s.pt")
+model = YOLO("yolov8n.pt")
 
 MODEL_PATH = "hand_landmarker.task"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
@@ -39,6 +40,8 @@ CONNECTIONS = [
 ]
 
 prev_time = 0
+
+os.makedirs("screenshots", exist_ok=True)
 
 
 def dist(a, b):
@@ -75,7 +78,7 @@ if not cap.isOpened():
     print("could not open webcam")
     exit()
 
-print("press q to quit")
+print("press q to quit | press s to screenshot")
 
 ts = 0
 
@@ -115,9 +118,25 @@ while True:
     cv2.putText(annotated, f"FPS: {int(fps)}", (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
+    # Object count display
+    obj_count = len(results[0].boxes) if results[0].boxes is not None else 0
+    cv2.putText(annotated, f"Objects: {obj_count}", (20, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+    # Screenshot hint
+    cv2.putText(annotated, "S: Screenshot | Q: Quit", (20, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
     cv2.imshow("Object Detection and Tracking - CodeAlpha", annotated)
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    key = cv2.waitKey(30) & 0xFF
+
+    if key == ord("s"):
+        filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        cv2.imwrite(filename, annotated)
+        print(f"✅ Screenshot saved: {filename}")
+
+    if key == ord("q"):
         break
 
 cap.release()
