@@ -40,7 +40,6 @@ CONNECTIONS = [
 ]
 
 prev_time = 0
-
 os.makedirs("screenshots", exist_ok=True)
 
 
@@ -70,9 +69,37 @@ def draw_hand(frame, lm):
         cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
 
 
+def draw_ui(frame, fps, obj_count, screenshot_msg=""):
+    h, w, _ = frame.shape
+
+    # Dark overlay — top bar
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, 130), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+    # FPS
+    cv2.putText(frame, f"FPS: {int(fps)}", (15, 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+
+    # Objects
+    cv2.putText(frame, f"Objects: {obj_count}", (15, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
+
+    # Controls hint
+    cv2.putText(frame, "S: Screenshot | Q: Quit", (15, 105),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
+    # Screenshot message
+    if screenshot_msg:
+        cv2.putText(frame, screenshot_msg, (15, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    return frame
+
+
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 if not cap.isOpened():
     print("could not open webcam")
@@ -81,6 +108,8 @@ if not cap.isOpened():
 print("press q to quit | press s to screenshot")
 
 ts = 0
+screenshot_msg = ""
+screenshot_timer = 0
 
 while True:
     ret, frame = cap.read()
@@ -89,16 +118,16 @@ while True:
 
     frame = cv2.flip(frame, 1)
 
-    # FPS calculate karo
+    # FPS calculate
     curr_time = time.time()
     fps = 1 / (curr_time - prev_time) if prev_time else 0
     prev_time = curr_time
 
-    # object detection + tracking
-    results = model.track(frame, persist=True, verbose=False)
+    # Object detection
+    results = model.track(frame, persist=True, verbose=False, conf=0.3)
     annotated = results[0].plot()
 
-    # hand + finger counting
+    # Hand detection
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     ts += 33
@@ -114,18 +143,15 @@ while True:
             cv2.putText(annotated, f"{label}: {fingers} fingers", (x - 50, y + 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # FPS display
-    cv2.putText(annotated, f"FPS: {int(fps)}", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-    # Object count display
+    # Object count
     obj_count = len(results[0].boxes) if results[0].boxes is not None else 0
-    cv2.putText(annotated, f"Objects: {obj_count}", (20, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
-    # Screenshot hint
-    cv2.putText(annotated, "S: Screenshot | Q: Quit", (20, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    # Screenshot message timer
+    if time.time() - screenshot_timer > 3:
+        screenshot_msg = ""
+
+    # Draw UI
+    annotated = draw_ui(annotated, fps, obj_count, screenshot_msg)
 
     cv2.imshow("Object Detection and Tracking - CodeAlpha", annotated)
 
@@ -134,6 +160,8 @@ while True:
     if key == ord("s"):
         filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         cv2.imwrite(filename, annotated)
+        screenshot_msg = f"Saved: {filename}"
+        screenshot_timer = time.time()
         print(f"✅ Screenshot saved: {filename}")
 
     if key == ord("q"):
