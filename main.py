@@ -4,6 +4,7 @@ import urllib.request
 from datetime import datetime
 
 import cv2
+import numpy as np
 import mediapipe as mp
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
@@ -21,8 +22,8 @@ if not os.path.exists(MODEL_PATH):
 options = vision.HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     num_hands=2,
-    min_hand_detection_confidence=0.6,
-    min_tracking_confidence=0.6,
+    min_hand_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
     running_mode=vision.RunningMode.VIDEO,
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(options)
@@ -69,31 +70,63 @@ def draw_hand(frame, lm):
         cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
 
 
+def get_dominant_color(frame, box):
+    x1, y1, x2, y2 = map(int, box)
+    h, w = frame.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+
+    roi = frame[y1:y2, x1:x2]
+    if roi.size == 0:
+        return "Unknown", (128, 128, 128)
+
+    avg = cv2.mean(roi)[:3]
+    b, g, r = int(avg[0]), int(avg[1]), int(avg[2])
+
+    pixel = np.uint8([[[b, g, r]]])
+    hsv = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)[0][0]
+    h_val, s_val, v_val = hsv
+
+    if v_val < 50:
+        color_name = "Black"
+    elif s_val < 50 and v_val > 200:
+        color_name = "White"
+    elif s_val < 60:
+        color_name = "Gray"
+    elif h_val < 10 or h_val > 170:
+        color_name = "Red"
+    elif 10 <= h_val < 25:
+        color_name = "Orange"
+    elif 25 <= h_val < 35:
+        color_name = "Yellow"
+    elif 35 <= h_val < 85:
+        color_name = "Green"
+    elif 85 <= h_val < 125:
+        color_name = "Blue"
+    elif 125 <= h_val < 150:
+        color_name = "Purple"
+    else:
+        color_name = "Pink"
+
+    return color_name, (b, g, r)
+
+
 def draw_ui(frame, fps, obj_count, screenshot_msg=""):
     h, w, _ = frame.shape
-
-    # Dark overlay — top bar
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 130), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-    # FPS
     cv2.putText(frame, f"FPS: {int(fps)}", (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-
-    # Objects
     cv2.putText(frame, f"Objects: {obj_count}", (15, 70),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
-
-    # Controls hint
     cv2.putText(frame, "S: Screenshot | Q: Quit", (15, 105),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-    # Screenshot message
     if screenshot_msg:
         cv2.putText(frame, screenshot_msg, (15, h - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
     return frame
 
 
@@ -118,14 +151,24 @@ while True:
 
     frame = cv2.flip(frame, 1)
 
-    # FPS calculate
     curr_time = time.time()
     fps = 1 / (curr_time - prev_time) if prev_time else 0
     prev_time = curr_time
 
-    # Object detection
-    results = model.track(frame, persist=True, verbose=False, conf=0.3)
+    # Object detection — predict use karo
+    results = model.predict(frame, verbose=False, conf=0.3)
     annotated = results[0].plot()
+
+    # Color detection
+    if results[0].boxes is not None:
+        for box in results[0].boxes.xyxy:
+            color_name, bgr = get_dominant_color(frame, box)
+            x1, y1, x2, y2 = map(int, box)
+            cx, cy = (x1 + x2) // 2, y2 + 20
+            cv2.circle(annotated, (cx - 40, cy), 10, bgr, -1)
+            cv2.circle(annotated, (cx - 40, cy), 10, (255, 255, 255), 1)
+            cv2.putText(annotated, color_name, (cx - 25, cy + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     # Hand detection
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -143,14 +186,11 @@ while True:
             cv2.putText(annotated, f"{label}: {fingers} fingers", (x - 50, y + 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # Object count
     obj_count = len(results[0].boxes) if results[0].boxes is not None else 0
 
-    # Screenshot message timer
     if time.time() - screenshot_timer > 3:
         screenshot_msg = ""
 
-    # Draw UI
     annotated = draw_ui(annotated, fps, obj_count, screenshot_msg)
 
     cv2.imshow("Object Detection and Tracking - CodeAlpha", annotated)
