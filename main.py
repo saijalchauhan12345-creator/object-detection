@@ -40,6 +40,18 @@ CONNECTIONS = [
     (0, 17),
 ]
 
+COLOR_RANGES = [
+    ("Red",    (0, 70, 50),   (10, 255, 255),  (0, 0, 255)),
+    ("Red",    (170, 70, 50), (180, 255, 255),  (0, 0, 255)),
+    ("Orange", (11, 70, 50),  (25, 255, 255),   (0, 165, 255)),
+    ("Yellow", (26, 70, 50),  (34, 255, 255),   (0, 255, 255)),
+    ("Green",  (35, 50, 50),  (85, 255, 255),   (0, 200, 0)),
+    ("Cyan",   (86, 50, 50),  (100, 255, 255),  (255, 255, 0)),
+    ("Blue",   (101, 50, 50), (130, 255, 255),  (255, 0, 0)),
+    ("Purple", (131, 50, 50), (155, 255, 255),  (200, 0, 200)),
+    ("Pink",   (156, 50, 50), (169, 255, 255),  (180, 105, 255)),
+]
+
 prev_time = 0
 os.makedirs("screenshots", exist_ok=True)
 
@@ -61,6 +73,37 @@ def count_fingers(lm):
     return count
 
 
+def detect_gesture(lm):
+    wrist = lm[0]
+
+    # Fingers up check
+    fingers_up = []
+    # Thumb
+    tip_to_pinky = dist(lm[4], lm[17])
+    mcp_to_pinky = dist(lm[2], lm[17])
+    fingers_up.append(tip_to_pinky > mcp_to_pinky * 1.1)
+
+    # Other 4 fingers
+    for tip_id, pip_id in zip(TIP_IDS[1:], PIP_IDS[1:]):
+        fingers_up.append(dist(lm[tip_id], wrist) > dist(lm[pip_id], wrist) * 1.1)
+
+    thumb, index, middle, ring, pinky = fingers_up
+
+    # Thumbs up — only thumb up, rest down
+    if thumb and not index and not middle and not ring and not pinky:
+        return "thumbs_up"
+
+    # Peace — index + middle up, rest down
+    if not thumb and index and middle and not ring and not pinky:
+        return "peace"
+
+    # Fist — all down
+    if not any(fingers_up):
+        return "fist"
+
+    return None
+
+
 def draw_hand(frame, lm):
     h, w, _ = frame.shape
     pts = [(int(p.x * w), int(p.y * h)) for p in lm]
@@ -80,49 +123,50 @@ def get_dominant_color(frame, box):
     if roi.size == 0:
         return "Unknown", (128, 128, 128)
 
-    avg = cv2.mean(roi)[:3]
-    b, g, r = int(avg[0]), int(avg[1]), int(avg[2])
+    roi_small = cv2.resize(roi, (60, 60))
+    hsv_roi = cv2.cvtColor(roi_small, cv2.COLOR_BGR2HSV)
 
-    pixel = np.uint8([[[b, g, r]]])
-    hsv = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)[0][0]
-    h_val, s_val, v_val = hsv
+    v_mean = np.mean(hsv_roi[:, :, 2])
+    s_mean = np.mean(hsv_roi[:, :, 1])
 
-    if v_val < 50:
-        color_name = "Black"
-    elif s_val < 50 and v_val > 200:
-        color_name = "White"
-    elif s_val < 60:
-        color_name = "Gray"
-    elif h_val < 10 or h_val > 170:
-        color_name = "Red"
-    elif 10 <= h_val < 25:
-        color_name = "Orange"
-    elif 25 <= h_val < 35:
-        color_name = "Yellow"
-    elif 35 <= h_val < 85:
-        color_name = "Green"
-    elif 85 <= h_val < 125:
-        color_name = "Blue"
-    elif 125 <= h_val < 150:
-        color_name = "Purple"
-    else:
-        color_name = "Pink"
+    if v_mean < 40:
+        return "Black", (20, 20, 20)
+    if s_mean < 40 and v_mean > 200:
+        return "White", (255, 255, 255)
+    if s_mean < 45:
+        return "Gray", (128, 128, 128)
 
-    return color_name, (b, g, r)
+    best_color = "Unknown"
+    best_count = 0
+    best_bgr = (128, 128, 128)
+
+    for name, lower, upper, bgr in COLOR_RANGES:
+        mask = cv2.inRange(hsv_roi, np.array(lower), np.array(upper))
+        count = cv2.countNonZero(mask)
+        if count > best_count:
+            best_count = count
+            best_color = name
+            best_bgr = bgr
+
+    return best_color, best_bgr
 
 
-def draw_ui(frame, fps, obj_count, screenshot_msg=""):
+def draw_ui(frame, fps, obj_count, gesture_msg="", screenshot_msg=""):
     h, w, _ = frame.shape
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 130), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (0, 0), (w, 155), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
     cv2.putText(frame, f"FPS: {int(fps)}", (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
     cv2.putText(frame, f"Objects: {obj_count}", (15, 70),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
-    cv2.putText(frame, "S: Screenshot | Q: Quit", (15, 105),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.putText(frame, "S/Q: key | Thumbs Up: Screenshot | Peace: Quit", (15, 105),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+    if gesture_msg:
+        cv2.putText(frame, gesture_msg, (15, 140),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     if screenshot_msg:
         cv2.putText(frame, screenshot_msg, (15, h - 20),
@@ -138,11 +182,16 @@ if not cap.isOpened():
     print("could not open webcam")
     exit()
 
-print("press q to quit | press s to screenshot")
+print("press q to quit | press s to screenshot | Thumbs Up = screenshot | Peace = quit")
 
 ts = 0
 screenshot_msg = ""
 screenshot_timer = 0
+gesture_msg = ""
+gesture_timer = 0
+gesture_cooldown = 2  # seconds between gesture triggers
+last_gesture_time = 0
+quit_flag = False
 
 while True:
     ret, frame = cap.read()
@@ -155,7 +204,6 @@ while True:
     fps = 1 / (curr_time - prev_time) if prev_time else 0
     prev_time = curr_time
 
-    # Object detection — predict use karo
     results = model.predict(frame, verbose=False, conf=0.3)
     annotated = results[0].plot()
 
@@ -164,10 +212,11 @@ while True:
         for box in results[0].boxes.xyxy:
             color_name, bgr = get_dominant_color(frame, box)
             x1, y1, x2, y2 = map(int, box)
-            cx, cy = (x1 + x2) // 2, y2 + 20
-            cv2.circle(annotated, (cx - 40, cy), 10, bgr, -1)
-            cv2.circle(annotated, (cx - 40, cy), 10, (255, 255, 255), 1)
-            cv2.putText(annotated, color_name, (cx - 25, cy + 5),
+            cx = (x1 + x2) // 2
+            cy = y2 + 25
+            cv2.circle(annotated, (cx - 45, cy), 12, bgr, -1)
+            cv2.circle(annotated, (cx - 45, cy), 12, (255, 255, 255), 2)
+            cv2.putText(annotated, color_name, (cx - 28, cy + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     # Hand detection
@@ -183,25 +232,55 @@ while True:
             fingers = count_fingers(lm)
             draw_hand(annotated, lm)
             x, y = int(lm[0].x * w), int(lm[0].y * h)
-            cv2.putText(annotated, f"{label}: {fingers} fingers", (x - 50, y + 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+            # Gesture detect karo
+            gesture = detect_gesture(lm)
+
+            if gesture and (curr_time - last_gesture_time > gesture_cooldown):
+                last_gesture_time = curr_time
+
+                if gesture == "thumbs_up":
+                    filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    cv2.imwrite(filename, annotated)
+                    screenshot_msg = f"👍 Screenshot Saved!"
+                    screenshot_timer = curr_time
+                    print(f"✅ Thumbs Up! Screenshot saved: {filename}")
+
+                elif gesture == "peace":
+                    gesture_msg = "✌️ Peace! Quitting..."
+                    quit_flag = True
+
+            # Show gesture name
+            gesture_label = {
+                "thumbs_up": "👍 Thumbs Up",
+                "peace": "✌️ Peace",
+                "fist": "✊ Fist",
+            }.get(gesture, "")
+
+            cv2.putText(annotated, f"{label}: {fingers}f {gesture_label}",
+                        (x - 50, y + 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     obj_count = len(results[0].boxes) if results[0].boxes is not None else 0
 
-    if time.time() - screenshot_timer > 3:
+    if curr_time - screenshot_timer > 3:
         screenshot_msg = ""
 
-    annotated = draw_ui(annotated, fps, obj_count, screenshot_msg)
+    annotated = draw_ui(annotated, fps, obj_count, gesture_msg, screenshot_msg)
 
     cv2.imshow("Object Detection and Tracking - CodeAlpha", annotated)
+
+    if quit_flag:
+        time.sleep(1)
+        break
 
     key = cv2.waitKey(30) & 0xFF
 
     if key == ord("s"):
         filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         cv2.imwrite(filename, annotated)
-        screenshot_msg = f"Saved: {filename}"
-        screenshot_timer = time.time()
+        screenshot_msg = f"✅ Screenshot Saved!"
+        screenshot_timer = curr_time
         print(f"✅ Screenshot saved: {filename}")
 
     if key == ord("q"):
