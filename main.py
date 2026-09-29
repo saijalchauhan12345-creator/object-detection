@@ -13,10 +13,13 @@ from ultralytics import YOLO
 model = YOLO("yolov8n.pt")
 
 MODEL_PATH = "hand_landmarker.task"
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 if not os.path.exists(MODEL_PATH):
-    print("downloading hand model...")
+    print("Downloading hand model...")
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 options = vision.HandLandmarkerOptions(
@@ -52,8 +55,23 @@ COLOR_RANGES = [
     ("Pink",   (156, 50, 50), (169, 255, 255),  (180, 105, 255)),
 ]
 
+# Load cascades
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml"
+)
+smile_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_smile.xml"
+)
+eye_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml"
+)
+
 prev_time = 0
 os.makedirs("screenshots", exist_ok=True)
+
+last_emotion_time = 0
+emotion_text = "Emotion: Detecting..."
+emotion_interval = 0.5
 
 
 def dist(a, b):
@@ -75,32 +93,19 @@ def count_fingers(lm):
 
 def detect_gesture(lm):
     wrist = lm[0]
-
-    # Fingers up check
     fingers_up = []
-    # Thumb
     tip_to_pinky = dist(lm[4], lm[17])
     mcp_to_pinky = dist(lm[2], lm[17])
     fingers_up.append(tip_to_pinky > mcp_to_pinky * 1.1)
-
-    # Other 4 fingers
     for tip_id, pip_id in zip(TIP_IDS[1:], PIP_IDS[1:]):
         fingers_up.append(dist(lm[tip_id], wrist) > dist(lm[pip_id], wrist) * 1.1)
-
     thumb, index, middle, ring, pinky = fingers_up
-
-    # Thumbs up — only thumb up, rest down
     if thumb and not index and not middle and not ring and not pinky:
         return "thumbs_up"
-
-    # Peace — index + middle up, rest down
     if not thumb and index and middle and not ring and not pinky:
         return "peace"
-
-    # Fist — all down
     if not any(fingers_up):
         return "fist"
-
     return None
 
 
@@ -118,28 +123,22 @@ def get_dominant_color(frame, box):
     h, w = frame.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w, x2), min(h, y2)
-
     roi = frame[y1:y2, x1:x2]
     if roi.size == 0:
         return "Unknown", (128, 128, 128)
-
     roi_small = cv2.resize(roi, (60, 60))
     hsv_roi = cv2.cvtColor(roi_small, cv2.COLOR_BGR2HSV)
-
     v_mean = np.mean(hsv_roi[:, :, 2])
     s_mean = np.mean(hsv_roi[:, :, 1])
-
     if v_mean < 40:
         return "Black", (20, 20, 20)
     if s_mean < 40 and v_mean > 200:
         return "White", (255, 255, 255)
     if s_mean < 45:
         return "Gray", (128, 128, 128)
-
     best_color = "Unknown"
     best_count = 0
     best_bgr = (128, 128, 128)
-
     for name, lower, upper, bgr in COLOR_RANGES:
         mask = cv2.inRange(hsv_roi, np.array(lower), np.array(upper))
         count = cv2.countNonZero(mask)
@@ -147,27 +146,77 @@ def get_dominant_color(frame, box):
             best_count = count
             best_color = name
             best_bgr = bgr
-
     return best_color, best_bgr
+
+
+def detect_emotion(frame):
+    global last_emotion_time, emotion_text
+    current_time = time.time()
+    if current_time - last_emotion_time < emotion_interval:
+        return
+
+    # Check cascade loaded
+    if face_cascade.empty():
+        emotion_text = "Emotion: N/A"
+        return
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
+    )
+
+    if len(faces) == 0:
+        emotion_text = "Emotion: No face"
+        last_emotion_time = current_time
+        return
+
+    for (fx, fy, fw, fh) in faces:
+        face_gray = gray[fy:fy+fh, fx:fx+fw]
+        brightness = np.mean(face_gray)
+
+        smiles = []
+        if not smile_cascade.empty():
+            smiles = smile_cascade.detectMultiScale(
+                face_gray, 1.8, 20, minSize=(25, 25)
+            )
+
+        eyes = []
+        if not eye_cascade.empty():
+            eyes = eye_cascade.detectMultiScale(
+                face_gray, 1.1, 5, minSize=(20, 20)
+            )
+
+        if len(smiles) > 0:
+            emotion_text = "Emotion: Happy 😊"
+        elif len(eyes) == 0:
+            emotion_text = "Emotion: Sleepy 😴"
+        elif brightness < 80:
+            emotion_text = "Emotion: Sad 😔"
+        else:
+            emotion_text = "Emotion: Neutral 😐"
+        break
+
+    last_emotion_time = current_time
 
 
 def draw_ui(frame, fps, obj_count, gesture_msg="", screenshot_msg=""):
     h, w, _ = frame.shape
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 155), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (0, 0), (w, 180), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-    cv2.putText(frame, f"FPS: {int(fps)}", (15, 35),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-    cv2.putText(frame, f"Objects: {obj_count}", (15, 70),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
-    cv2.putText(frame, "S/Q: key | Thumbs Up: Screenshot | Peace: Quit", (15, 105),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    cv2.putText(frame, f"FPS: {int(fps)}", (15, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(frame, f"Objects: {obj_count}", (15, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(frame, emotion_text, (15, 90),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, "S/Q: key | Thumbs Up: Screenshot | Peace: Quit", (15, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
 
     if gesture_msg:
-        cv2.putText(frame, gesture_msg, (15, 140),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
+        cv2.putText(frame, gesture_msg, (15, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
     if screenshot_msg:
         cv2.putText(frame, screenshot_msg, (15, h - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -179,17 +228,16 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 if not cap.isOpened():
-    print("could not open webcam")
+    print("Could not open webcam")
     exit()
 
-print("press q to quit | press s to screenshot | Thumbs Up = screenshot | Peace = quit")
+print("Press Q to quit | Press S to screenshot | Thumbs Up = screenshot | Peace = quit")
 
 ts = 0
 screenshot_msg = ""
 screenshot_timer = 0
 gesture_msg = ""
-gesture_timer = 0
-gesture_cooldown = 2  # seconds between gesture triggers
+gesture_cooldown = 2
 last_gesture_time = 0
 quit_flag = False
 
@@ -207,7 +255,6 @@ while True:
     results = model.predict(frame, verbose=False, conf=0.3)
     annotated = results[0].plot()
 
-    # Color detection
     if results[0].boxes is not None:
         for box in results[0].boxes.xyxy:
             color_name, bgr = get_dominant_color(frame, box)
@@ -219,7 +266,8 @@ while True:
             cv2.putText(annotated, color_name, (cx - 28, cy + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-    # Hand detection
+    detect_emotion(frame)
+
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     ts += 33
@@ -232,29 +280,24 @@ while True:
             fingers = count_fingers(lm)
             draw_hand(annotated, lm)
             x, y = int(lm[0].x * w), int(lm[0].y * h)
-
-            # Gesture detect karo
             gesture = detect_gesture(lm)
 
             if gesture and (curr_time - last_gesture_time > gesture_cooldown):
                 last_gesture_time = curr_time
-
                 if gesture == "thumbs_up":
                     filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                     cv2.imwrite(filename, annotated)
-                    screenshot_msg = f"👍 Screenshot Saved!"
+                    screenshot_msg = "Thumbs Up! Screenshot Saved!"
                     screenshot_timer = curr_time
-                    print(f"✅ Thumbs Up! Screenshot saved: {filename}")
-
+                    print(f"Screenshot saved: {filename}")
                 elif gesture == "peace":
-                    gesture_msg = "✌️ Peace! Quitting..."
+                    gesture_msg = "Peace! Quitting..."
                     quit_flag = True
 
-            # Show gesture name
             gesture_label = {
-                "thumbs_up": "👍 Thumbs Up",
-                "peace": "✌️ Peace",
-                "fist": "✊ Fist",
+                "thumbs_up": "Thumbs Up",
+                "peace": "Peace",
+                "fist": "Fist",
             }.get(gesture, "")
 
             cv2.putText(annotated, f"{label}: {fingers}f {gesture_label}",
@@ -279,9 +322,9 @@ while True:
     if key == ord("s"):
         filename = f"screenshots/screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         cv2.imwrite(filename, annotated)
-        screenshot_msg = f"✅ Screenshot Saved!"
+        screenshot_msg = "Screenshot Saved!"
         screenshot_timer = curr_time
-        print(f"✅ Screenshot saved: {filename}")
+        print(f"Screenshot saved: {filename}")
 
     if key == ord("q"):
         break
