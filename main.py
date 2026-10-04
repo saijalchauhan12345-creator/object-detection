@@ -25,7 +25,6 @@ if not os.path.exists(MODEL_PATH):
 CASCADE_FILES = {
     "haarcascade_frontalface_alt2.xml": "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt2.xml",
     "haarcascade_smile.xml": "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_smile.xml",
-    "haarcascade_eye_tree_eyeglasses.xml": "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_eye_tree_eyeglasses.xml",
 }
 
 for filename, url in CASCADE_FILES.items():
@@ -68,14 +67,13 @@ COLOR_RANGES = [
 
 face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_alt2.xml")
 smile_cascade = cv2.CascadeClassifier("haarcascade_smile.xml")
-eye_cascade = cv2.CascadeClassifier("haarcascade_eye_tree_eyeglasses.xml")
 
 prev_time = 0
 os.makedirs("screenshots", exist_ok=True)
 
 last_emotion_time = 0
 emotion_text = "Emotion: Detecting..."
-emotion_interval = 2.0  # Har 2 sec mein detect karo
+emotion_interval = 2.0
 
 
 def dist(a, b):
@@ -163,7 +161,6 @@ def detect_emotion(frame):
         emotion_text = "Emotion: N/A"
         return
 
-    # Small frame for speed
     small = cv2.resize(frame, (320, 240))
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
@@ -186,20 +183,14 @@ def detect_emotion(frame):
                 face_gray, 1.8, 15, minSize=(20, 20)
             )
 
-        eyes = []
-        if not eye_cascade.empty():
-            eyes = eye_cascade.detectMultiScale(
-                face_gray, 1.1, 3, minSize=(15, 15)
-            )
-
         if len(smiles) > 0:
             emotion_text = "Emotion: Happy 😊"
-        elif len(eyes) == 0:
-            emotion_text = "Emotion: Sleepy 😴"
-        elif brightness < 80:
-            emotion_text = "Emotion: Sad 😔"
-        else:
+        elif brightness > 80:
             emotion_text = "Emotion: Neutral 😐"
+        elif brightness > 50:
+            emotion_text = "Emotion: Calm 😌"
+        else:
+            emotion_text = "Emotion: Sad 😔"
         break
 
     last_emotion_time = current_time
