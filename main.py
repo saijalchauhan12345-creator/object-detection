@@ -22,16 +22,6 @@ if not os.path.exists(MODEL_PATH):
     print("Downloading hand model...")
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
-CASCADE_FILES = {
-    "haarcascade_frontalface_alt2.xml": "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt2.xml",
-    "haarcascade_smile.xml": "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_smile.xml",
-}
-
-for filename, url in CASCADE_FILES.items():
-    if not os.path.exists(filename):
-        print(f"Downloading {filename}...")
-        urllib.request.urlretrieve(url, filename)
-
 options = vision.HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     num_hands=2,
@@ -40,6 +30,14 @@ options = vision.HandLandmarkerOptions(
     running_mode=vision.RunningMode.VIDEO,
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(options)
+
+# Multiple face mesh — max 3 faces
+face_mesh = mp.solutions.face_mesh.FaceMesh(
+    max_num_faces=3,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+)
 
 TIP_IDS = [4, 8, 12, 16, 20]
 PIP_IDS = [3, 6, 10, 14, 18]
@@ -65,15 +63,12 @@ COLOR_RANGES = [
     ("Pink",   (156, 50, 50), (169, 255, 255),  (180, 105, 255)),
 ]
 
-face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_alt2.xml")
-smile_cascade = cv2.CascadeClassifier("haarcascade_smile.xml")
-
 prev_time = 0
 os.makedirs("screenshots", exist_ok=True)
 
 last_emotion_time = 0
-emotion_text = "Emotion: Detecting..."
-emotion_interval = 2.0
+emotion_results = []
+emotion_interval = 1.0
 
 
 def dist(a, b):
@@ -151,47 +146,70 @@ def get_dominant_color(frame, box):
     return best_color, best_bgr
 
 
-def detect_emotion(frame):
-    global last_emotion_time, emotion_text
+def get_emotion_from_landmarks(lm):
+    upper_lip = lm[13]
+    lower_lip = lm[14]
+    left_corner = lm[61]
+    right_corner = lm[291]
+
+    mouth_height = abs(upper_lip.y - lower_lip.y)
+    mouth_width = abs(left_corner.x - right_corner.x)
+    mouth_ratio = mouth_height / (mouth_width + 1e-6)
+
+    mouth_center_y = (left_corner.y + right_corner.y) / 2
+    upper_lip_y = upper_lip.y
+    smile_score = mouth_center_y - upper_lip_y
+
+    left_brow = lm[105]
+    right_brow = lm[334]
+    left_eye = lm[159]
+    right_eye = lm[386]
+    brow_raise = ((left_eye.y - left_brow.y) + (right_eye.y - right_brow.y)) / 2
+
+    if mouth_ratio > 0.15:
+        return "Surprised 😮"
+    elif smile_score > 0.02 and mouth_ratio > 0.04:
+        return "Happy 😊"
+    elif smile_score < 0.005:
+        return "Sad 😔"
+    elif brow_raise < 0.04:
+        return "Angry 😠"
+    else:
+        return "Neutral 😐"
+
+
+def detect_emotions_multi(frame):
+    global last_emotion_time, emotion_results
     current_time = time.time()
     if current_time - last_emotion_time < emotion_interval:
         return
 
-    if face_cascade.empty():
-        emotion_text = "Emotion: N/A"
-        return
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb)
 
-    small = cv2.resize(frame, (320, 240))
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    emotion_results = []
 
-    faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.3, minNeighbors=3, minSize=(60, 60)
-    )
-
-    if len(faces) == 0:
-        emotion_text = "Emotion: No face"
+    if not results.multi_face_landmarks:
         last_emotion_time = current_time
         return
 
-    for (fx, fy, fw, fh) in faces:
-        face_gray = gray[fy:fy+fh, fx:fx+fw]
-        brightness = np.mean(face_gray)
+    h, w = frame.shape[:2]
 
-        smiles = []
-        if not smile_cascade.empty():
-            smiles = smile_cascade.detectMultiScale(
-                face_gray, 1.8, 15, minSize=(20, 20)
-            )
+    for i, face_landmarks in enumerate(results.multi_face_landmarks):
+        lm = face_landmarks.landmark
+        emotion = get_emotion_from_landmarks(lm)
 
-        if len(smiles) > 0:
-            emotion_text = "Emotion: Happy 😊"
-        elif brightness > 80:
-            emotion_text = "Emotion: Neutral 😐"
-        elif brightness > 50:
-            emotion_text = "Emotion: Calm 😌"
-        else:
-            emotion_text = "Emotion: Sad 😔"
-        break
+        # Face position — nose tip
+        nose = lm[1]
+        fx = int(nose.x * w)
+        fy = int(nose.y * h)
+
+        emotion_results.append({
+            "face": i + 1,
+            "emotion": emotion,
+            "x": fx,
+            "y": fy
+        })
 
     last_emotion_time = current_time
 
@@ -199,20 +217,33 @@ def detect_emotion(frame):
 def draw_ui(frame, fps, obj_count, gesture_msg="", screenshot_msg=""):
     h, w, _ = frame.shape
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 180), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (0, 0), (w, 160), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
     cv2.putText(frame, f"FPS: {int(fps)}", (15, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     cv2.putText(frame, f"Objects: {obj_count}", (15, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-    cv2.putText(frame, emotion_text, (15, 90),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, "S/Q: key | Thumbs Up: Screenshot | Peace: Quit", (15, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
+
+    # Show emotion for each face
+    if emotion_results:
+        for er in emotion_results:
+            label = f"Face {er['face']}: {er['emotion']}"
+            cv2.putText(frame, label, (15, 90 + (er['face'] - 1) * 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+            # Show on face too
+            cv2.putText(frame, er['emotion'], (er['x'] - 40, er['y'] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+    else:
+        cv2.putText(frame, "Emotion: No face", (15, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+
+    cv2.putText(frame, "S/Q: key | Thumbs Up: Screenshot | Peace: Quit",
+                (15, 145),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
     if gesture_msg:
-        cv2.putText(frame, gesture_msg, (15, 150),
+        cv2.putText(frame, gesture_msg, (15, h - 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
     if screenshot_msg:
         cv2.putText(frame, screenshot_msg, (15, h - 20),
@@ -263,7 +294,7 @@ while True:
             cv2.putText(annotated, color_name, (cx - 28, cy + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-    detect_emotion(frame)
+    detect_emotions_multi(frame)
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
